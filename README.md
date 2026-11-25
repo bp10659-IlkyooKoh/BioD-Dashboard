@@ -13,11 +13,14 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-`app.py`, `biod_analysis.py`, `biod_ui.py`는 같은 폴더에 있어야 합니다.
+`app.py`, `biod_analysis.py`, `biod_ui.py`, `biod_mollim.py`는 같은 폴더에 있어야 합니다.
 
 ## 사용
 
 1. 기존처럼 몰림·Minerva·KIRAMS `.xlsx`를 업로드하고 표시 물질명을 지정합니다.
+   몰림 파일은 `Compound`·`물질명`·`Test Article` 등의 명시적 물질명 열을 `Group`보다
+   우선 사용합니다. 해당 열이 없으면 Group, 둘 다 없으면 기존처럼 시트명을 사용합니다.
+   상단 제목 행과 물질명·시간 열의 병합 셀을 지원하며, 업로드 파일 요약에 선택한 물질명 열을 표시합니다.
 2. **BioD Report & Candidate Analysis** 탭에서 분석할 파일·그룹, 표적 장기,
    비교 장기, Reference를 선택합니다. 그룹은 파일 내용·CRO·원래 그룹명 기준으로 구분합니다.
    파일 이름이 같아도 내용이 다르면 별도 분석하며, 완전히 같은 파일의 중복 업로드는 제외합니다.
@@ -63,7 +66,7 @@ python -m streamlit run app.py
 ## 검증
 
 ```powershell
-python -m unittest -v test_biod_analysis test_biod_app
+python -m unittest -v test_biod_analysis test_biod_app test_biod_mollim
 ```
 
 합성 데이터로 수치 계산·통계 제외 조건·보고서 구조 및 Excel 업로드→화면 설정 변경을 검증합니다.

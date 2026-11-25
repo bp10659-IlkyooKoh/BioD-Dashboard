@@ -6,9 +6,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import io
 import hashlib
+import zipfile
 from pathlib import Path
 from biod_analysis import integrate_curve
 from biod_ui import render_analysis
+from biod_mollim import parse_mollim_workbook
 
 # =====================================================
 # 페이지 설정
@@ -718,43 +720,11 @@ def detect_cro(file, xls):
 # 몰림 파서
 # =====================================================
 def parse_mollim(file):
-    reset_file_pointer(file)
-    xls = pd.ExcelFile(file)
-
-    result = []
-
-    for sheet in xls.sheet_names:
-        try:
-            reset_file_pointer(file)
-            df = pd.read_excel(file, sheet_name=sheet)
-
-            group_col = find_column(df, ["group"])
-            time_col = find_column(df, ["timepoint"])
-            animal_col = find_column(df, ["mouse"])
-            organ_col = find_column(df, ["organ"])
-            pidg_col = find_column(df, ["%id/g", "id/g"])
-
-            if time_col is None or organ_col is None or pidg_col is None:
-                continue
-
-            temp = pd.DataFrame()
-
-            temp["group_id"] = df[group_col] if group_col is not None else sheet
-            temp["timepoint"] = df[time_col]
-            temp["timepoint_hour"] = temp["timepoint"].apply(extract_hour)
-            temp["animal_id"] = df[animal_col] if animal_col is not None else ""
-            temp["organ"] = df[organ_col].astype(str).str.strip().str.upper()
-            temp["percent_id_per_g"] = pd.to_numeric(df[pidg_col], errors="coerce")
-
-            result.append(temp)
-
-        except Exception:
-            pass
-
-    if len(result) == 0:
-        return pd.DataFrame()
-
-    return pd.concat(result, ignore_index=True)
+    out = parse_mollim_workbook(file, extract_hour)
+    for diagnostic in out.attrs.get("parse_diagnostics", []):
+        if diagnostic["status"] != "ok":
+            st.warning(f"{get_uploaded_file_name(file)} / {diagnostic['sheet']}: {diagnostic['status']}")
+    return out
 
 
 # =====================================================
@@ -1198,6 +1168,7 @@ with st.spinner("업로드된 BioD 파일을 읽고 표준화하는 중입니다
                 continue
 
             if len(df) == 0:
+                st.warning(f"{get_uploaded_file_name(file)}: 인식된 데이터가 없습니다. 물질명·시간·장기·%ID/g 열을 확인해 주세요.")
                 continue
 
             df["source_cro"] = cro
@@ -1213,12 +1184,15 @@ with st.spinner("업로드된 BioD 파일을 읽고 표준화하는 중입니다
             overview.append({
                 "File": get_uploaded_file_name(file),
                 "CRO": cro,
+                "물질명 컬럼": ", ".join(sorted(df["compound_column"].unique())) if "compound_column" in df else "CRO 전용 파서",
                 "Groups/Compounds": df["group_id"].nunique(),
                 "Animals": df["animal_id"].nunique(),
                 "Organs": df["organ"].nunique(),
                 "Timepoints": df["timepoint"].nunique()
             })
 
+        except zipfile.BadZipFile:
+            st.warning(f"{get_uploaded_file_name(file)}: 확장자는 .xlsx이지만 일반 Excel 파일 형식으로 읽을 수 없습니다. Excel에서 표준 .xlsx로 저장한 사본을 사용해 주세요.")
         except Exception as e:
             st.warning(f"{get_uploaded_file_name(file)} : {e}")
 
