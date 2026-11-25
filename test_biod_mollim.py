@@ -6,6 +6,20 @@ import pandas as pd
 from biod_mollim import parse_mollim_workbook
 
 
+def multi_compound_fixture():
+    """Synthetic values with known AUC, ratio and ranking; contains no study data."""
+    rows = []
+    for compound, factor in [("Reference", 1), ("Candidate A", 1.5), ("Candidate B", 2), ("Candidate C", 0.5)]:
+        for time, decay in [(1, 1), (4, 0.5), (24, 0.25)]:
+            for animal, variation in enumerate([0.9, 1, 1.1], start=1):
+                for organ, base in [("Tumor", 8), ("Kidney", 4), ("Blood", 2)]:
+                    effect = factor if organ == "Tumor" else 1 / factor
+                    rows.append({"Group": "G1", "Compound": compound, "Timepoint": f"{time}h",
+                                 "Mouse": f"{compound}-{time}-{animal}", "Organ": organ,
+                                 "Uptake (%ID/g)": base * decay * effect * variation})
+    return pd.DataFrame(rows)
+
+
 def workbook(table, **kwargs):
     stream = io.BytesIO()
     table.to_excel(stream, index=False, **kwargs)

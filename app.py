@@ -11,6 +11,7 @@ from pathlib import Path
 from biod_analysis import integrate_curve
 from biod_ui import render_analysis
 from biod_mollim import parse_mollim_workbook
+from biod_labels import clean_group_with_tp
 
 # =====================================================
 # 페이지 설정
@@ -551,53 +552,6 @@ def find_column(df, candidates):
                 return original
 
     return None
-
-
-def clean_group_with_tp(row):
-    s = str(row["group_id"]).strip()
-    tp_str = str(row["timepoint"]).strip()
-    tp_hour = row.get("timepoint_hour", 0.0)
-
-    if s.lower() == "nan" or s == "":
-        return "Unknown"
-
-    original = s
-
-    s = re.sub(
-        r"[\s\-_/]*\([\s_]*\d+\.?\d*[\s_]*[a-zA-Z가-힣]*[\s_]*\)",
-        "",
-        s
-    )
-    s = re.sub(
-        r"[\s\-_/]*\[[\s_]*\d+\.?\d*[\s_]*[a-zA-Z가-힣]*[\s_]*\]",
-        "",
-        s
-    )
-
-    s = re.sub(
-        r"[-_\s/]*\d+\.?\d*[\s_]*(h|hr|hrs|hour|hours|min|mins|minute|minutes|d|day|days|w|week|weeks|시간|일|분|주|pi|p\.i\.|post)$",
-        "",
-        s,
-        flags=re.IGNORECASE
-    )
-
-    match = re.search(r"[-_\s/]+(\d+\.?\d*)$", s)
-
-    if match:
-        try:
-            group_tail_num = float(match.group(1))
-            tp_nums = re.findall(r"\d+\.?\d*", tp_str)
-            tp_raw_num = float(tp_nums[0]) if tp_nums else -1.0
-
-            if (tp_hour > 0 and abs(group_tail_num - tp_hour) < 0.01) or \
-               (tp_raw_num >= 0 and abs(group_tail_num - tp_raw_num) < 0.01):
-                s = s[:match.start()]
-        except Exception:
-            pass
-
-    s = s.strip()
-
-    return s if s != "" else original
 
 
 def get_uploaded_file_name(file):
