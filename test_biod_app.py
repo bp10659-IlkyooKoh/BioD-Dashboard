@@ -6,6 +6,73 @@ from streamlit.testing.v1 import AppTest
 
 
 class DashboardTests(unittest.TestCase):
+    def test_shared_calculation_pipeline_across_every_tab(self):
+        app_path = str(Path(__file__).with_name("app.py"))
+        script = '''
+import io
+import runpy
+from unittest.mock import patch
+import numpy as np
+import pandas as pd
+import streamlit as st
+import biod_ui
+from biod_analysis import prepare, summarize, auc_table
+if "shared_pipeline_uploads" not in st.session_state:
+    blobs = {}
+    for number, scale in [(1, 1), (2, 2)]:
+        records = []
+        for time, tvalue, kvalue in [("1h", 10, 2), ("4h", 8, 1), ("24h", 4, 0.5), ("1d", 6, 1.5)]:
+            for organ, value in [("tumour", tvalue), ("KIDNEY", kvalue)]:
+                records.append({"Compound": "AC-SK-001", "Timepoint": time, "Mouse": time, "Organ": organ, "%ID/g": value * scale})
+        for time, value in [("1h", -100), ("4h", np.inf), ("unknown", 9999)]:
+            records.append({"Compound": "AC-SK-001", "Timepoint": time, "Mouse": "invalid", "Organ": "Tumor", "%ID/g": value})
+        stream = io.BytesIO()
+        pd.DataFrame(records).to_excel(stream, index=False)
+        blobs[f"study{number}.xlsx"] = stream.getvalue()
+    st.session_state.shared_pipeline_uploads = blobs
+uploads = []
+for name, blob in st.session_state.shared_pipeline_uploads.items():
+    file = io.BytesIO(blob)
+    file.name = name
+    uploads.append(file)
+with patch("streamlit.file_uploader", return_value=uploads), patch("biod_analysis.prepare", wraps=prepare) as cleaning, patch("biod_analysis.summarize", wraps=summarize) as aggregation, patch("biod_ui.auc_table", wraps=auc_table) as integration, patch("streamlit.download_button", wraps=st.download_button) as downloads:
+    result = runpy.run_path(APP_PATH, run_name="__main__")
+assert cleaning.call_count == aggregation.call_count == integration.call_count == 1
+master, summary, chart = result["master"], result["shared_summary"], result["chart_data"]
+assert master is result["analysis_input"]
+assert len(master) == 16 and len(summary) == 12
+assert set(master.timepoint) == {"1h", "4h", "24h"}
+assert len(result["quality_issues"]) and result["quality_issues"].rows.iloc[0] == 6
+assert summary.profile.nunique() == summary.label.nunique() == 2
+pd.testing.assert_frame_equal(summary[["profile", "organ", "timepoint_hour", "mean", "sd"]], chart[["profile", "organ", "timepoint_hour", "mean_id_g", "std_id_g"]].rename(columns={"mean_id_g": "mean", "std_id_g": "sd"}))
+mean_table = result["pivot_df"]
+assert "1d" not in mean_table
+tumor_rows = mean_table[mean_table["장기(Organ)"] == "Tumor"]
+assert set(tumor_rows["24h"]) == {5, 10}
+context = result["analysis_context"]
+expected_tumor = {"observed": 157, "hold": 167, "zero": 162}[context["method"]]
+expected_kidney = {"observed": 24.5, "hold": 26.5, "zero": 25.5}[context["method"]]
+aucs = context["aucs"]
+assert set(aucs[aucs.organ == "Tumor"].auc) == {expected_tumor, expected_tumor * 2}
+assert set(aucs[aucs.organ == "Kidney"].auc) == {expected_kidney, expected_kidney * 2}
+pk = result["auc_df"]
+for _, row in pk.iterrows():
+    source = aucs[(aucs.label == row["물질명"]) & (aucs.organ == row["장기(Organ)"])].iloc[0]
+    assert row["AUC"] == source.auc and row["시작(h)"] == source.start_h and row["종료(h)"] == source.end_h
+exports = {call.kwargs.get('key'): call.kwargs for call in downloads.call_args_list}
+report_ranking = pd.read_excel(io.BytesIO(exports['report_excel']['data']), sheet_name='후보 비교')
+assert set(report_ranking['Tumor AUC']) == {expected_tumor, expected_tumor * 2}
+assert set(report_ranking['Kidney AUC']) == {expected_kidney, expected_kidney * 2}
+mean_export = next(call.kwargs['data'] for call in downloads.call_args_list if call.kwargs.get('label') == '📥 현재 표를 Excel로 다운로드')
+mean_export = pd.read_excel(io.BytesIO(mean_export), sheet_name='Mean_Table')
+assert set(mean_export[mean_export['장기(Organ)']=='Tumor']['24h']) == {5, 10}
+'''.replace("APP_PATH", repr(app_path))
+        app = AppTest.from_string(script, default_timeout=90).run()
+        self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
+        next(w for w in app.selectbox if w.label == "AUC 계산 방식").set_value("hold").run()
+        self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
+        self.assertFalse(any(w.key == "legacy_auc_method" for w in app.selectbox))
+
     def test_four_compound_analysis_and_report(self):
         app_path = str(Path(__file__).with_name("app.py"))
         script = '''
@@ -180,6 +247,7 @@ with patch("streamlit.file_uploader", return_value=[minerva, kirams]):
     assert set(kirams_data.timepoint_hour) == {24, 48}
     assert kirams_data.row_type.eq("mean").all()
     assert len(parsed[parsed.source_cro == "Minerva"]) == 54
+    assert result["chart_data"].loc[result["chart_data"].summary_input, "std_id_g"].isna().all()
 '''.replace("APP_PATH", repr(app_path))
         app = AppTest.from_string(script, default_timeout=90).run()
         self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])

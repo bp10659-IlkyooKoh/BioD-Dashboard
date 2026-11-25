@@ -9,6 +9,7 @@ from html import escape
 
 import numpy as np
 import pandas as pd
+from biod_labels import clean_group_with_tp
 
 try:
     from scipy.stats import ttest_ind
@@ -23,6 +24,25 @@ AUC_METHODS = {
 }
 
 
+def profile_labels(df):
+    """Short labels when unambiguous, with file/hash disambiguation when needed."""
+    names = df[["profile", "display_group_id", "source_file"]].drop_duplicates("profile").set_index("profile")
+    labels = names.display_group_id.astype(str).copy()
+    repeated = labels.duplicated(keep=False)
+    labels.loc[repeated] += " | " + names.loc[repeated, "source_file"]
+    repeated = labels.duplicated(keep=False)
+    labels.loc[repeated] += labels.loc[repeated].index.to_series().map(lambda p: " | " + hashlib.sha256(p.encode()).hexdigest()[:8])
+    return df.profile.map(labels)
+
+
+def apply_display_names(df, mapping):
+    """Changing an alias never changes the underlying profile or sample identity."""
+    df = df.copy()
+    df["display_group_id"] = df.display_group_id.map(mapping).fillna(df.display_group_id)
+    df["label"] = profile_labels(df)
+    return df
+
+
 def prepare(raw):
     df = raw.copy()
     for col, default in [("source_file", "Unknown"), ("source_cro", "Unknown"),
@@ -32,13 +52,13 @@ def prepare(raw):
         df[col] = df[col].fillna(default).astype(str)
     if "source_id" not in df:
         df["source_id"] = df.source_file
+    df["group_id"] = df.apply(clean_group_with_tp, axis=1)
+    if "display_group_id" not in df:
+        df["display_group_id"] = "[" + df.source_cro + "] " + df.group_id
     # JSON tuple prevents ambiguous concatenated identifiers from merging studies.
     df["profile"] = df.apply(lambda r: json.dumps(
         [r.source_cro, r.source_id, str(r.group_id)], ensure_ascii=False), axis=1)
-    df["label"] = df["display_group_id"].astype(str) + " | " + df["source_file"]
-    collisions = df[["profile", "label"]].drop_duplicates()["label"].duplicated(keep=False)
-    if collisions.any():
-        df["label"] += " | " + df["group_id"].astype(str) + " | " + df.profile.map(lambda s: hashlib.sha256(s.encode()).hexdigest()[:8])
+    df["label"] = profile_labels(df)
     for col in ["percent_id_per_g", "timepoint_hour"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["organ"] = df["organ"].astype(str).str.strip().str.title().replace(
@@ -47,6 +67,9 @@ def prepare(raw):
              & (df.timepoint_hour >= 0) & (df.percent_id_per_g >= 0))
     issues = [{"issue": "시간/측정값 결측·비수치·음수 제외", "rows": int((~valid).sum())}]
     df = df.loc[valid].copy()
+    if "original_timepoint" not in df:
+        df["original_timepoint"] = df["timepoint"] if "timepoint" in df else df.timepoint_hour
+    df["timepoint"] = df.timepoint_hour.map(lambda h: f"{h:g}h")
     identified = df.animal_id.str.strip().str.lower().isin(["", "nan", "none", "unknown"]) == False
     duplicate = identified & df.duplicated(KEY + ["animal_id"], keep=False)
     df["duplicate_animal"] = duplicate
@@ -57,6 +80,7 @@ def prepare(raw):
 def summarize(df):
     result = df.groupby(KEY, as_index=False).agg(
         label=("label", "first"), source_cro=("source_cro", "first"),
+        timepoint=("timepoint", "first"),
         source_file=("source_file", "first"), mean=("percent_id_per_g", "mean"),
         sd=("percent_id_per_g", "std"), rows=("percent_id_per_g", "size"),
         summary_input=("row_type", lambda x: bool(x.ne("raw").any())))

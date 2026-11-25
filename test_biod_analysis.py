@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 
 from biod_analysis import (prepare, summarize, integrate_curve, auc_table, ratio_tables,
                            retention_table, reference_comparison, rank_candidates,
-                           bh_adjust, build_report)
+                           bh_adjust, build_report, apply_display_names)
 
 
 def fixture():
@@ -112,6 +112,24 @@ class AnalysisTests(unittest.TestCase):
         raw, _ = prepare(pd.concat([first, second], ignore_index=True))
         self.assertEqual(raw.profile.nunique(), 4)
         self.assertEqual(raw.label.nunique(), 4)
+
+    def test_canonical_units_and_aliases_keep_profiles_separate(self):
+        first = fixture().iloc[:2].copy()
+        first["timepoint"] = ["1d", "24h"]
+        first["timepoint_hour"] = 24
+        first["organ"] = ["tumour", " TUMOR "]
+        first["percent_id_per_g"] = [4, 6]
+        second = first.assign(source_file="other.xlsx", percent_id_per_g=20)
+        raw, _ = prepare(pd.concat([first, second], ignore_index=True))
+        mapped = apply_display_names(raw, {"Reference": "Same alias"})
+        summary = summarize(mapped)
+        self.assertEqual(set(summary.timepoint), {"24h"})
+        self.assertEqual(set(summary.organ), {"Tumor"})
+        self.assertEqual(len(summary), 2)
+        self.assertEqual(set(summary["mean"]), {5, 20})
+        self.assertEqual(mapped.profile.nunique(), 2)
+        self.assertEqual(mapped.label.nunique(), 2)
+        self.assertEqual(set(mapped.original_timepoint), {"1d", "24h"})
 
     def test_report_contains_results_and_escapes_uploads(self):
         report = build_report({"Summary": self.summary, "Labels": pd.DataFrame({"name": ["=1+1", "<script>alert(1)</script>"]})}, {"auc": "observed", "start": 1}, [])

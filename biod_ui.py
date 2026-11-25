@@ -39,9 +39,13 @@ def _p_text(value):
     return "—" if pd.isna(value) else f"{value:.3g}"
 
 
-def render_analysis(master, report_tab):
+def render_analysis(master, report_tab, shared_summary=None, shared_issues=None, auc_controls=None):
     st.subheader("Candidate Analysis")
-    raw, issues = prepare(master)
+    if shared_summary is None:
+        raw, issues = prepare(master)
+        shared_summary = summarize(raw)
+    else:
+        raw, issues = master, shared_issues
     if raw.empty:
         _unavailable(report_tab, "유효한 측정값과 시간 데이터가 없습니다.")
         return
@@ -51,7 +55,7 @@ def render_analysis(master, report_tab):
         _unavailable(report_tab, "분석 대상을 선택해 주세요.")
         return
     raw = raw[raw.profile.isin(chosen)].copy()
-    summary = summarize(raw)
+    summary = shared_summary[shared_summary.profile.isin(chosen)].copy()
     identities = raw[["profile", "display_group_id"]].drop_duplicates("profile")
     repeated = identities.display_group_id.duplicated(keep=False)
     short_labels = {r.profile: labels[r.profile] if repeated.loc[i] else str(r.display_group_id)
@@ -72,19 +76,21 @@ def render_analysis(master, report_tab):
     overlap = common_start <= common_end
     if not overlap:
         common_start, common_end = float(times[0]), float(times[-1])
-    with st.expander("세부 계산 설정"):
-        method = st.selectbox("AUC 계산 방식", list(AUC_METHODS), format_func=AUC_METHODS.get, key="analysis_auc_method")
-        time_options = sorted(set(times) | ({0.0} if method != "observed" else set()))
-        default_start = common_start if method == "observed" else 0.0
-        start, end = st.select_slider("분석 시간 범위 (h)", options=time_options,
-                                     value=(default_start, common_end), format_func=lambda h: f"{h:g}h",
-                                     key=f"analysis_auc_window_{method}")
-        st.caption("기본값은 선택한 물질의 표적·비교 장기가 겹치는 관측 구간입니다. 실측 시간점으로 범위를 바꿀 수 있습니다. "
-                   "0시간 가정은 실제 0시간 측정값이 없을 때만 적용하며, 마지막 관측 이후는 외삽하지 않습니다.")
+    with auc_controls if auc_controls is not None else st.container():
+        with st.expander("공통 AUC 설정"):
+            method = st.selectbox("AUC 계산 방식", list(AUC_METHODS), format_func=AUC_METHODS.get, key="analysis_auc_method")
+            time_options = sorted(set(times) | ({0.0} if method != "observed" else set()))
+            default_start = common_start if method == "observed" else 0.0
+            start, end = st.select_slider("분석 시간 범위 (h)", options=time_options,
+                                         value=(default_start, common_end), format_func=lambda h: f"{h:g}h",
+                                         key=f"analysis_auc_window_{method}")
+            st.caption("PK・Candidate Analysis・보고서에 같은 AUC 방식과 구간을 적용합니다. 기본값은 선택한 후보의 표적·비교 장기가 겹치는 관측 구간입니다. "
+                       "관측 범위 안 경계는 선형 보간하며, 마지막 관측 이후는 외삽하지 않습니다.")
     st.caption(f"분석 구간 {start:g}–{end:g}h · {AUC_METHODS[method]}")
     if not overlap or end <= start:
         st.warning("모든 물질을 비교할 수 있는 공통 시간 구간이 부족합니다. 비교할 물질이나 세부 계산 설정의 범위를 확인해 주세요.")
-    aucs = auc_table(summary, method, start, end)
+    shared_aucs = auc_table(shared_summary, method, start, end)
+    aucs = shared_aucs[shared_aucs.profile.isin(chosen)].copy()
     ratios, auc_ratios = ratio_tables(summary, aucs, tumor)
     weight = 0.5
     ranking = rank_candidates(aucs, tumor, normal, weight)
@@ -240,3 +246,4 @@ def render_analysis(master, report_tab):
         with st.expander("보고서 구성 및 데이터 확인"):
             st.write("PDF: 분석 범위·주요 관찰·통계 방법·핵심 표. Excel: 요약·시간별 비율·상세 결과·원자료. 검토 의견을 입력하면 두 형식에 함께 포함됩니다.")
             st.dataframe(issues, hide_index=True)
+    return dict(aucs=shared_aucs, method=method, start=start, end=end)

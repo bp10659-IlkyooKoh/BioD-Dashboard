@@ -8,10 +8,9 @@ import io
 import hashlib
 import zipfile
 from pathlib import Path
-from biod_analysis import integrate_curve
+from biod_analysis import prepare, summarize, apply_display_names, excel_bytes
 from biod_ui import render_analysis
 from biod_mollim import parse_mollim_workbook
-from biod_labels import clean_group_with_tp
 
 # =====================================================
 # 페이지 설정
@@ -1158,21 +1157,10 @@ if len(all_data) == 0:
 # =====================================================
 # 데이터 전역 세척
 # =====================================================
-master = pd.concat(all_data, ignore_index=True)
-# Preserve invalid records for the v2 quality report; legacy charts use valid values.
-analysis_input = master.copy()
-master = master.dropna(subset=["percent_id_per_g", "timepoint_hour"])
+master, quality_issues = prepare(pd.concat(all_data, ignore_index=True))
 if master.empty:
     st.error("유효한 측정값과 시간점이 없습니다. 파일의 시간 단위와 %ID/g 값을 확인해 주세요.")
     st.stop()
-
-master["source_cro"] = master["source_cro"].fillna("Unknown")
-master["organ"] = master["organ"].fillna("Unknown")
-master["timepoint"] = master["timepoint"].apply(standardize_timepoint)
-
-master["group_id"] = master.apply(clean_group_with_tp, axis=1)
-master["display_group_id"] = "[" + master["source_cro"].astype(str) + "] " + master["group_id"].astype(str)
-
 
 # =====================================================
 # KPI 요약
@@ -1189,7 +1177,7 @@ with kpi_col1:
 with kpi_col2:
     render_metric_card("CRO", f"{master['source_cro'].nunique():,}", "인식된 업체 수")
 with kpi_col3:
-    render_metric_card("Groups", f"{master['display_group_id'].nunique():,}", "그룹/물질 수")
+    render_metric_card("Groups", f"{master['profile'].nunique():,}", "파일·그룹별 물질 수")
 with kpi_col4:
     render_metric_card("Organs", f"{master['organ'].nunique():,}", "장기 수")
 with kpi_col5:
@@ -1227,12 +1215,11 @@ edited_mapping = st.data_editor(
 )
 
 mapping_dict = dict(zip(edited_mapping["Original Name"], edited_mapping["New Name"]))
-master["display_group_id"] = master["display_group_id"].map(mapping_dict).fillna(master["display_group_id"])
-analysis_input["timepoint"] = analysis_input["timepoint"].apply(standardize_timepoint)
-analysis_input["group_id"] = analysis_input.apply(clean_group_with_tp, axis=1)
-analysis_input["display_group_id"] = "[" + analysis_input["source_cro"].astype(str) + "] " + analysis_input["group_id"].astype(str)
-analysis_input["display_group_id"] = analysis_input["display_group_id"].map(mapping_dict).fillna(analysis_input["display_group_id"])
+master = apply_display_names(master, mapping_dict)
+analysis_input = master
+shared_summary = summarize(master)
 st.markdown('</div>', unsafe_allow_html=True)
+st.caption("모든 탭은 같은 정제 데이터와 평균·SD를 사용합니다. 파일·원래 그룹이 다르면 같은 표시 이름이어도 합치지 않습니다.")
 
 
 # =====================================================
@@ -1305,6 +1292,7 @@ def polish_plotly_layout(fig, title=None):
 # 탭
 # =====================================================
 st.divider()
+auc_controls = st.container()
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Mean Table",
     "📊 Whole BioD Bar Plot",
@@ -1312,6 +1300,9 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🧪 Candidate Analysis",
     "📄 BioD Report"
 ])
+
+with tab4:
+    analysis_context = render_analysis(master, tab5, shared_summary, quality_issues, auc_controls)
 
 
 # -----------------------------------------------------
@@ -1327,7 +1318,7 @@ with tab1:
 
     table_cros = sorted(master["source_cro"].unique())
     table_organs = sorted(master["organ"].unique())
-    table_groups = sorted(master["display_group_id"].unique())
+    table_groups = sorted(master["label"].unique())
 
     t_col1, t_col2, t_col3 = st.columns(3)
 
@@ -1352,18 +1343,18 @@ with tab1:
             default=table_organs
         )
 
-    table_master = master[
-        (master["source_cro"].isin(selected_t_cros)) &
-        (master["display_group_id"].isin(selected_t_groups)) &
-        (master["organ"].isin(selected_t_organs))
+    table_master = shared_summary[
+        (shared_summary["source_cro"].isin(selected_t_cros)) &
+        (shared_summary["label"].isin(selected_t_groups)) &
+        (shared_summary["organ"].isin(selected_t_organs))
     ]
 
     if not table_master.empty:
         pivot_df = table_master.pivot_table(
-            index=["source_cro", "display_group_id", "organ"],
+            index=["source_cro", "label", "organ"],
             columns="timepoint",
-            values="percent_id_per_g",
-            aggfunc="mean"
+            values="mean",
+            aggfunc="first"
         )
 
         time_order = (
@@ -1378,20 +1369,15 @@ with tab1:
 
         pivot_df = pivot_df.rename(columns={
             "source_cro": "CRO",
-            "display_group_id": "그룹명/물질",
+            "label": "그룹명/물질",
             "organ": "장기(Organ)"
         })
 
         st.dataframe(pivot_df, use_container_width=True, hide_index=True)
 
-        buffer = io.BytesIO()
-
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            pivot_df.to_excel(writer, sheet_name="Mean_Table", index=False)
-
         st.download_button(
             label="📥 현재 표를 Excel로 다운로드",
-            data=buffer.getvalue(),
+            data=excel_bytes({"Mean_Table": pivot_df}, {"calculation": "Shared summary; file/group identities kept separate"}),
             file_name="BioD_Mean_Table.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
@@ -1421,13 +1407,7 @@ with tab2:
     with col_t2_2:
         show_error_bar = st.toggle("📏 SD Error bar 표시", value=True, key="error_bar_toggle")
 
-    chart_data = master.groupby(
-        ["display_group_id", "organ", "timepoint", "timepoint_hour"],
-        as_index=False
-    ).agg(
-        mean_id_g=("percent_id_per_g", "mean"),
-        std_id_g=("percent_id_per_g", "std")
-    )
+    chart_data = shared_summary.rename(columns={"label": "display_group_id", "mean": "mean_id_g", "sd": "std_id_g"}).copy()
 
     available_timepoints = chart_data.sort_values("timepoint_hour")["timepoint"].unique()
     available_organs = chart_data["organ"].unique()
@@ -1490,7 +1470,7 @@ with tab2:
             if show_error_bar:
                 error_y_setting = dict(
                     type="data",
-                    array=grp_df["std_id_g"].fillna(0),
+                    array=grp_df["std_id_g"],
                     visible=True,
                     thickness=1.6,
                     color="rgba(17,24,39,0.56)"
@@ -1551,7 +1531,7 @@ with tab3:
     st.markdown('<div class="soft-card">', unsafe_allow_html=True)
     render_section_header(
         "📈 PK Trend Line Plot & AUC",
-        "선택한 장기에 대해 시간에 따른 %ID/g 변화를 확인하고 AUC_0-last를 계산합니다.",
+        "선택한 장기의 시간별 평균·SD와 공통 설정으로 계산한 AUC를 확인합니다.",
         label="PK / AUC"
     )
 
@@ -1563,9 +1543,10 @@ with tab3:
     with col_t3_2:
         show_error_line = st.toggle("📏 SD Error bar 표시", value=True, key="error_line_toggle")
 
-    st.caption("이 탭은 기존 CRO·표시 그룹 기준의 요약입니다. 파일별 분리·공통 구간 AUC 비교는 BioD Report & Candidate Analysis 탭을 사용하세요.")
-    legacy_auc_method = st.selectbox("AUC 0시간 처리", ["observed", "hold", "zero"],
-        format_func=lambda m: {"observed": "관측 구간만 (AUC_first–last)", "hold": "0시간 = 첫 측정값 (AUC_0–last, 기존 가정)", "zero": "0시간 = 0 (AUC_0–last)"}[m], key="legacy_auc_method")
+    if analysis_context:
+        st.caption(f"전체 탭의 공통 AUC 구간: {analysis_context['start']:g}–{analysis_context['end']:g}h. 방식·구간은 위의 공통 AUC 설정에서 변경합니다.")
+    else:
+        st.info("Candidate Analysis에서 분석할 물질과 표적·비교 장기를 선택하면 공통 AUC를 표시합니다.")
 
     selected_line_organs = st.multiselect(
         "🎯 분석할 장기",
@@ -1669,27 +1650,11 @@ with tab3:
                 with line_cols[i % 2]:
                     st.plotly_chart(fig_line, use_container_width=True, config=plotly_config)
 
-                for grp in line_df["display_group_id"].unique():
-                    grp_data = line_df[
-                        line_df["display_group_id"] == grp
-                    ].sort_values("timepoint_hour")
-
-                    if len(grp_data) > 1:
-                        times = grp_data["timepoint_hour"].values
-                        concs = grp_data["mean_id_g"].values
-
-                        auc_start = float(times[0]) if legacy_auc_method == "observed" else 0.0
-                        auc_val, auc_status = integrate_curve(times, concs, legacy_auc_method, auc_start, float(times[-1]))
-
-                        auc_results.append({
-                            "장기(Organ)": organ,
-                            "물질명": grp,
-                            "AUC": round(auc_val, 2),
-                            "시작(h)": auc_start,
-                            "종료(h)": float(times[-1]),
-                            "0시간 처리": legacy_auc_method,
-                            "상태": auc_status
-                        })
+                if analysis_context:
+                    organ_aucs = analysis_context["aucs"]
+                    organ_aucs = organ_aucs[organ_aucs.organ == organ]
+                    auc_results.extend(organ_aucs[["organ", "label", "auc", "start_h", "end_h", "method", "status"]].rename(columns={
+                        "organ": "장기(Organ)", "label": "물질명", "auc": "AUC", "start_h": "시작(h)", "end_h": "종료(h)", "method": "0시간 처리", "status": "상태"}).to_dict("records"))
 
         if auc_results:
             st.markdown("##### 📐 AUC Summary (%ID/g·h)")
@@ -1709,6 +1674,3 @@ with tab3:
         st.info("장기를 하나 이상 선택해 주세요.")
 
     st.markdown('</div>', unsafe_allow_html=True)
-
-with tab4:
-    render_analysis(analysis_input, tab5)
