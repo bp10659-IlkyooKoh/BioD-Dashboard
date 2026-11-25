@@ -1,6 +1,5 @@
 """Readable reports from calculated results; no external AI calls."""
 import io
-import os
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -60,14 +59,15 @@ def summarize_results(ranking, retention, comparisons, settings, labels):
 def _fonts():
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
-    root = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    candidates = [root / "malgun.ttf", Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf")]
-    normal = next((p for p in candidates if p.exists()), None)
-    if normal is None:
-        raise RuntimeError("한글 PDF 글꼴이 필요합니다. 맑은 고딕 또는 NanumGothic을 설치해 주세요.")
-    bold = root / "malgunbd.ttf" if normal.name == "malgun.ttf" else normal
+    root = Path(__file__).resolve().parent / "fonts"
+    normal, bold = root / "NanumGothic-Regular.ttf", root / "NanumGothic-Bold.ttf"
+    if not normal.is_file() or not bold.is_file():
+        raise RuntimeError("PDF용 한글 글꼴이 누락되었습니다. 앱과 함께 fonts 폴더의 "
+                           "NanumGothic-Regular.ttf, NanumGothic-Bold.ttf를 업로드해 주세요.")
     pdfmetrics.registerFont(TTFont("BioDText", str(normal)))
-    pdfmetrics.registerFont(TTFont("BioDBold", str(bold if bold.exists() else normal)))
+    pdfmetrics.registerFont(TTFont("BioDBold", str(bold)))
+    pdfmetrics.registerFontFamily("BioDText", normal="BioDText", bold="BioDBold",
+                                 italic="BioDText", boldItalic="BioDBold")
     return "BioDText", "BioDBold"
 
 

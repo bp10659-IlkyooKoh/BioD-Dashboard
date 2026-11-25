@@ -87,10 +87,17 @@ python -m streamlit run app.py
 - **중복 의심 개체:** 기존대로 자동 삭제하지 않고 정제 데이터에 표시하며, 해당 비교의 통계 검정을 제외합니다.
   평균·AUC에서는 임의로 삭제하지 않습니다. 기술 반복인지 실제 중복인지 확인해 원자료를 정리해야 합니다.
 
-## 검증
+## Snowflake 배포 준비
+
+Warehouse runtime용 설정과 한글 PDF 글꼴을 포함합니다.
+`python build_snowflake_package.py`로 필요한 파일만 담은 업로드 폴더와 ZIP을 생성합니다.
+실행 파일은 `streamlit_app.py`이며, 자세한 절차는 [SNOWFLAKE_UPLOAD.md](SNOWFLAKE_UPLOAD.md)를 참조하세요.
+PDF는 저장소의 `fonts/`에 포함된 나눔고딕을 사용하므로 별도 글꼴 설치가 필요 없습니다.
+
+## 로컬 검증
 
 ```powershell
-python -m unittest -v test_biod_analysis test_biod_app test_biod_mollim test_biod_labels test_biod_reporting
+python -m unittest -v test_biod_analysis test_biod_app test_biod_mollim test_biod_labels test_biod_reporting test_biod_snowflake
 ```
 
 합성 데이터로 수치 계산·통계 제외 조건·보고서 구조 및 Excel 업로드→화면 설정 변경을 검증합니다.
