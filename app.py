@@ -1305,11 +1305,12 @@ def polish_plotly_layout(fig, title=None):
 # 탭
 # =====================================================
 st.divider()
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Mean Table",
     "📊 Whole BioD Bar Plot",
     "📈 PK Trend Line Plot & AUC",
-    "🧬 BioD Report & Candidate Analysis"
+    "Candidate Analysis",
+    "BioD Report"
 ])
 
 
@@ -1710,4 +1711,4 @@ with tab3:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab4:
-    render_analysis(analysis_input)
+    render_analysis(analysis_input, tab5)
