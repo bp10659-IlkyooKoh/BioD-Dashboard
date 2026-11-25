@@ -7,11 +7,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from biod_analysis import (AUC_METHODS, prepare, summarize, auc_table, ratio_tables,
                            retention_table, reference_comparison, rank_candidates,
-                           build_report, ttest_ind)
+                           build_report, excel_bytes, ttest_ind)
 
 
 @st.cache_data(show_spinner="보고서 준비 중...", max_entries=3)
@@ -34,6 +35,7 @@ def _compact(frame, columns, names, short_labels):
     view = view.rename(columns=names)
     formats = {c: "{:.1f}" if "%" in c else "{:.3f}" for c in view.select_dtypes(include="number")}
     st.dataframe(view.style.format(formats, na_rep="—"), hide_index=True, use_container_width=True)
+    return view
 
 
 def _p_text(value):
@@ -91,30 +93,29 @@ def render_analysis(master, report_tab):
     ranking = rank_candidates(aucs, tumor, normal, weight)
     tabs = st.tabs(["후보 비교", "장기 비율", "유지율·감소율", "Reference 비교"])
     figures = []
-    threshold = "unavailable"
     with tabs[0]:
         st.caption("표적 장기 AUC는 높고, 비교 장기 AUC는 낮은 정도를 동일하게 반영한 참고 순위입니다.")
         st.write(f"비교 가능 {len(ranking)} / {len(chosen)}개 물질")
         display = ranking[["rank", "label", "tumor_auc", "normal_auc", "auc_ratio"]].rename(columns={
             "rank": "순위", "label": "물질", "tumor_auc": f"{tumor} AUC", "normal_auc": f"{normal} AUC", "auc_ratio": f"{tumor}/{normal} AUC 비율"})
+        display["물질"] = ranking.profile.map(short_labels)
         st.dataframe(display, hide_index=True, use_container_width=True)
         if not ranking.empty:
-            refrow = ranking[ranking.profile == reference]
-            threshold = "Reference" if not refrow.empty else "중앙값"
-            xcut = float(refrow.normal_auc.iloc[0] if threshold == "Reference" else ranking.normal_auc.median())
-            ycut = float(refrow.tumor_auc.iloc[0] if threshold == "Reference" else ranking.tumor_auc.median())
-            ranking["quadrant"] = [
-                "표적↑ / 비교장기↓" if y >= ycut and x <= xcut else
-                "표적↑ / 비교장기↑" if y >= ycut else
-                "표적↓ / 비교장기↓" if x <= xcut else "표적↓ / 비교장기↑"
-                for x, y in zip(ranking.normal_auc, ranking.tumor_auc)]
-            fig = px.scatter(ranking, x="normal_auc", y="tumor_auc", color="quadrant", hover_name="label", hover_data=["rank", "auc_ratio"],
-                             labels={"normal_auc": f"{normal} AUC (%ID/g·h) ↓", "tumor_auc": f"{tumor} AUC (%ID/g·h) ↑"}, title="Candidate Quadrant")
-            fig.add_vline(x=xcut, line_dash="dash")
-            fig.add_hline(y=ycut, line_dash="dash")
-            fig.update_traces(marker_size=14)
+            names = [f"{int(r['rank'])}위 {short_labels[r.profile]}" + (" (Reference)" if r.profile == reference else "")
+                     for _, r in ranking.iterrows()]
+            colors = ["#E8913A" if p == reference else "#3563B9" for p in ranking.profile]
+            fig = make_subplots(rows=1, cols=2, shared_yaxes=True, horizontal_spacing=0.12,
+                                subplot_titles=[f"{tumor} AUC · 높을수록 좋음", f"{normal} AUC · 낮을수록 좋음"])
+            for column, value_column in [(1, "tumor_auc"), (2, "normal_auc")]:
+                fig.add_trace(go.Bar(x=ranking[value_column], y=names, orientation="h", marker_color=colors,
+                                     text=ranking[value_column], texttemplate="%{x:.2f}", textposition="outside", cliponaxis=False,
+                                     hovertemplate="%{y}<br>AUC: %{x:.3f} %ID/g·h<extra></extra>"), row=1, col=column)
+            max_auc = float(ranking[["tumor_auc", "normal_auc"]].max().max())
+            fig.update_xaxes(title_text="AUC (%ID/g·h)", range=[0, max(1, max_auc * 1.22)])
+            fig.update_yaxes(categoryorder="array", categoryarray=names, autorange="reversed", automargin=True)
+            fig.update_layout(showlegend=False, height=max(340, 65 * len(ranking) + 100), margin=dict(l=20, r=60, t=65, b=55))
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"왼쪽 위일수록 표적 분포가 높고 비교 장기 분포가 낮습니다. 점선 기준: {threshold}.")
+            st.caption(f"같은 행은 같은 물질입니다. 왼쪽은 {tumor} 분포, 오른쪽은 {normal} 분포이며 두 그래프의 AUC 축 범위는 같습니다. 주황색은 Reference입니다.")
             figures.append(fig)
         else:
             st.info("표적·비교 장기의 선택 구간 AUC가 모두 있는 물질이 없습니다.")
@@ -129,12 +130,20 @@ def render_analysis(master, report_tab):
         st.markdown(f"#### {tumor}-Organ ratio")
         st.caption(f"{tumor}/{ratio_organ} · {ratio_time:g}h · Mean 단위: %ID/g")
         selected_ratios = ratios[(ratios.organ == ratio_organ) & (ratios.timepoint_hour == ratio_time)]
-        _compact(selected_ratios, ["label", "mean", "tumor_mean", "tumor_to_organ"],
+        ratio_view = _compact(selected_ratios, ["label", "mean", "tumor_mean", "tumor_to_organ"],
                  {"label": "물질", "mean": f"{ratio_organ} Mean", "tumor_mean": f"{tumor} Mean", "tumor_to_organ": f"{tumor}/Organ ratio"}, short_labels)
+        export_context = dict(target=tumor, organ=ratio_organ, selected_profiles=[labels[p] for p in chosen],
+                              missing_values="Blank = unavailable (missing measurements or non-positive denominator)")
+        st.download_button(f"{tumor}-Organ ratio Excel 다운로드",
+                           data=excel_bytes({"Organ_Ratio": ratio_view}, dict(export_context, time_h=ratio_time, mean_unit="%ID/g", calculation="Ratio of means")),
+                           file_name=f"BioD_Organ_Ratio_{ratio_time:g}h.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ratio_excel")
         st.markdown(f"#### {tumor}-Organ ratio (AUC)")
         st.caption(f"{start:g}–{end:g}h · AUC 단위: %ID/g·h")
-        _compact(auc_ratios[auc_ratios.organ == ratio_organ], ["label", "auc", "tumor_auc", "auc_ratio"],
+        auc_ratio_view = _compact(auc_ratios[auc_ratios.organ == ratio_organ], ["label", "auc", "tumor_auc", "auc_ratio"],
                  {"label": "물질", "auc": f"{ratio_organ} AUC", "tumor_auc": f"{tumor} AUC", "auc_ratio": f"{tumor}/Organ AUC ratio"}, short_labels)
+        st.download_button(f"{tumor}-Organ ratio (AUC) Excel 다운로드",
+                           data=excel_bytes({"Organ_AUC_Ratio": auc_ratio_view}, dict(export_context, start_h=start, end_h=end, auc_method=AUC_METHODS[method], auc_unit="%ID/g·h", calculation="Ratio of AUCs")),
+                           file_name=f"BioD_Organ_AUC_Ratio_{start:g}-{end:g}h.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="auc_ratio_excel")
         st.caption("비율은 평균값끼리, AUC 비율은 같은 구간의 AUC끼리 나눈 값입니다. 분모 0·측정값 부족은 —로 표시합니다.")
         valid_ratios = ratios[ratios.organ == ratio_organ].dropna(subset=["tumor_to_organ"]).copy()
         if not valid_ratios.empty:
@@ -175,7 +184,7 @@ def render_analysis(master, report_tab):
             independent = st.checkbox("선택한 후보군과 Reference는 서로 독립된 개체군이며, 투여량·측정 조건·시험 설계를 비교할 수 있습니다.", value=False, key="analysis_independent")
         comparisons = reference_comparison(raw, summary, reference, independent)
         st.caption(f"Reference: {short_labels[reference]} · {reference_organ} · {reference_time:g}h · Mean 단위: %ID/g")
-        st.caption("p값: 양측 Welch t-test (독립 두 군, 등분산 가정 없음). 보정 p값(q): Benjamini–Hochberg FDR. "
+        st.caption("p값: 양측 Student t-test (독립 두 군, 등분산 가정). 보정 p값(q): Benjamini–Hochberg FDR. "
                    "보정 범위는 선택한 전체 물질×장기×시간의 유효 검정이며, 장기·시점 표시 필터로 바뀌지 않습니다. 검정 결과는 q<0.05 기준입니다.")
         if ttest_ind is None:
             st.warning("SciPy 설치 후 통계 검정을 사용할 수 있습니다.")
@@ -190,7 +199,7 @@ def render_analysis(master, report_tab):
             st.info("선택한 장기·시점에 Reference와 비교할 후보 데이터가 없습니다.")
         _compact(selected_comparison, ["label", "mean", "reference_mean", "change_pct", "p_display", "q_display", "result"],
                  {"label": "물질", "mean": "후보 Mean", "reference_mean": "Reference Mean", "change_pct": "증감률 (%)",
-                  "p_display": "p값 (Welch)", "q_display": "보정 p값 (BH q)", "result": "검정 결과"}, short_labels)
+                  "p_display": "p값 (Student t-test)", "q_display": "보정 p값 (BH q)", "result": "검정 결과"}, short_labels)
         st.caption("증감률 = (후보/Reference − 1) × 100. 검정을 하지 못한 경우 —와 사유를 표시합니다. 표본 수와 검정 상세는 보고서에서 확인할 수 있습니다.")
 
     with report_tab:
@@ -212,11 +221,11 @@ def render_analysis(master, report_tab):
                         ratio_organ=ratio_organ, ratio_time_h=ratio_time, retention_organ=retention_organ,
                         reference_view_organ=reference_organ, reference_view_time_h=reference_time,
                         independent_groups_confirmed=independent, selected_profiles=[labels[p] for p in chosen],
-                        statistics="Two-sided Welch; BH FDR over all valid selected comparisons",
+                        statistics="Two-sided Student t-test (equal variance); BH FDR over all valid selected comparisons",
                         ratios="Ratio of group means; ratio of AUCs on fixed common interval",
                         retention="Two-timepoint apparent decline; not systemic CL or terminal half-life",
                         summary_input="rows counts input records, not necessarily animals; SD omitted for summary inputs",
-                        quadrant_threshold=threshold,
+                        candidate_chart="Paired horizontal AUC bars; shared scale; Reference highlighted",
                         interpretation="Exploratory cohort-relative ranking; equal weight for target and comparator")
         tables = dict(Summary=summary, AUC=aucs, Ratios=ratios, AUC_Ratios=auc_ratios,
                       Retention=retention, Reference=comparisons, Ranking=ranking, Quality=issues, Raw_Data=raw)
@@ -224,5 +233,5 @@ def render_analysis(master, report_tab):
         report = _report_download(tables, settings, tuple(fig.to_json() for fig in figures))
         st.download_button("One-click BioD Report 다운로드", data=report, file_name=f"BioD_Report_{digest}.zip", mime="application/zip", key=f"report_{digest}", type="primary")
         with st.expander("보고서 포함 항목 및 데이터 확인"):
-            st.write("평균·AUC, 후보 순위·Quadrant, 장기 비율, 유지율·감소율, Reference 비교, 분석에 사용한 표준화 원자료")
+            st.write("평균·AUC, 후보 순위·물질별 AUC 비교 그래프, 장기 비율, 유지율·감소율, Reference 비교, 분석에 사용한 표준화 원자료")
             st.dataframe(issues, hide_index=True)

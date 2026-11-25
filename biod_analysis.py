@@ -173,7 +173,7 @@ def reference_comparison(raw, summary, reference, independence_confirmed=False):
             elif a.percent_id_per_g.var() == 0 and b.percent_id_per_g.var() == 0:
                 status = "양 군 분산 0: 검정 제외"
             else:
-                p = float(ttest_ind(a.percent_id_per_g, b.percent_id_per_g, equal_var=False).pvalue)
+                p = float(ttest_ind(a.percent_id_per_g, b.percent_id_per_g, equal_var=True).pvalue)
                 if np.isfinite(p):
                     out.loc[i, "p_value"] = p
                 else:
@@ -194,6 +194,26 @@ def rank_candidates(aucs, tumor, normal, weight=0.5):
     return result.sort_values(["rank", "label"])
 
 
+def excel_bytes(tables, settings):
+    """Export numeric tables and their analysis context without converting labels to formulas."""
+    excel = io.BytesIO()
+    with pd.ExcelWriter(excel, engine="openpyxl") as writer:
+        all_tables = {**tables, "Settings": pd.DataFrame({"setting": list(settings), "value": [str(v) for v in settings.values()]})}
+        for name, frame in all_tables.items():
+            frame.to_excel(writer, sheet_name=name[:31], index=False)
+            ws = writer.sheets[name[:31]]
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+            for row in ws.iter_rows():
+                for cell in row:
+                    # Uploaded labels must remain data, including leading '='.
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = min(55, max(14, len(str(col[0].value)) + 3))
+    return excel.getvalue()
+
+
 def build_report(tables, settings, figures):
     """Downloadable offline HTML + workbook + machine-readable settings."""
     from plotly.offline import get_plotlyjs
@@ -207,24 +227,9 @@ def build_report(tables, settings, figures):
             "<style>body{font:14px system-ui;margin:36px;color:#182230}table{border-collapse:collapse;display:block;overflow:auto}"
             "td,th{padding:7px;border:1px solid #ddd;text-align:left}h2{margin-top:32px}pre{white-space:pre-wrap}@media print{table{font-size:9px}}</style>"
             f"<script>{get_plotlyjs()}</script><h1>BioD Analysis Report</h1><pre>{escape(metadata)}</pre>" + plots + "".join(sections) + "</html>")
-    excel = io.BytesIO()
-    with pd.ExcelWriter(excel, engine="openpyxl") as writer:
-        all_tables = {"Settings": pd.DataFrame({"setting": list(settings), "value": [str(v) for v in settings.values()]}), **tables}
-        for name, frame in all_tables.items():
-            frame.to_excel(writer, sheet_name=name[:31], index=False)
-            ws = writer.sheets[name[:31]]
-            ws.freeze_panes = "A2"
-            ws.auto_filter.ref = ws.dimensions
-            for row in ws.iter_rows():
-                for cell in row:
-                    # Uploaded labels must remain data, including leading '='.
-                    if isinstance(cell.value, str):
-                        cell.data_type = "s"
-            for col in ws.columns:
-                ws.column_dimensions[col[0].column_letter].width = min(55, max(14, len(str(col[0].value)) + 3))
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("BioD_Report.html", html)
-        z.writestr("BioD_Analysis.xlsx", excel.getvalue())
+        z.writestr("BioD_Analysis.xlsx", excel_bytes(tables, settings))
         z.writestr("settings.json", metadata)
     return archive.getvalue()

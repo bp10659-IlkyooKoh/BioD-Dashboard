@@ -85,6 +85,15 @@ class AnalysisTests(unittest.TestCase):
     def test_bh_known_values(self):
         np.testing.assert_allclose(bh_adjust([0.01, 0.04, 0.03, np.nan]), [0.03, 0.04, 0.04, np.nan])
 
+    def test_reference_uses_two_sided_student_test(self):
+        from scipy.stats import ttest_ind
+        comparison = reference_comparison(self.raw, self.summary, self.reference, True)
+        actual = comparison[(comparison.organ == "Tumor") & (comparison.timepoint_hour == 1)].p_value.iloc[0]
+        expected = ttest_ind([14.4, 16, 17.6], [7.2, 8, 8.8], equal_var=True, alternative="two-sided").pvalue
+        welch = ttest_ind([14.4, 16, 17.6], [7.2, 8, 8.8], equal_var=False, alternative="two-sided").pvalue
+        self.assertAlmostEqual(actual, expected, places=12)
+        self.assertGreater(abs(actual - welch), 1e-5)
+
     def test_missing_and_study_separation(self):
         other = fixture().assign(source_file="other.xlsx", percent_id_per_g=100)
         combined, _ = prepare(pd.concat([fixture(), other], ignore_index=True))

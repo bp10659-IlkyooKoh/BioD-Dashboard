@@ -14,7 +14,7 @@ import runpy
 import streamlit as st
 from unittest.mock import patch
 from test_biod_mollim import multi_compound_fixture
-from biod_analysis import prepare, summarize, auc_table, rank_candidates, ratio_tables
+from biod_analysis import prepare, summarize, auc_table, rank_candidates, ratio_tables, AUC_METHODS
 if "four_compound_bytes" not in st.session_state:
     upload = io.BytesIO()
     data = multi_compound_fixture()
@@ -24,7 +24,7 @@ if "four_compound_bytes" not in st.session_state:
     st.session_state.four_compound_bytes = upload.getvalue()
 upload = io.BytesIO(st.session_state.four_compound_bytes)
 upload.name = "Synthetic_Four_Compounds.xlsx"
-with patch("streamlit.file_uploader", return_value=[upload]):
+with patch("streamlit.file_uploader", return_value=[upload]), patch("streamlit.download_button", wraps=st.download_button) as export_calls:
     result = runpy.run_path(APP_PATH, run_name="__main__")
 raw = result["analysis_input"]
 assert raw.group_id.nunique() == 4
@@ -40,6 +40,22 @@ ranking = rank_candidates(aucs, "Tumor", "Kidney")
 assert "AC-SK-048" in ranking.iloc[0].label
 assert abs(ranking.iloc[0].tumor_auc - 300) < 1e-8
 assert abs(ranking.iloc[0].auc_ratio - 8) < 1e-8
+downloads = {call.kwargs.get("key"): call.kwargs for call in export_calls.call_args_list}
+for key, sheet in [("ratio_excel", "Organ_Ratio"), ("auc_ratio_excel", "Organ_AUC_Ratio")]:
+    contents = downloads[key]["data"]
+    from openpyxl import load_workbook
+    assert load_workbook(io.BytesIO(contents)).active.title == sheet
+    import pandas as pd
+    table = pd.read_excel(io.BytesIO(contents), sheet_name=sheet)
+    assert len(table) == 4 and len(table.columns) == 4
+    assert abs(table.loc[table["물질"].str.endswith("AC-SK-048"), table.columns[-1]].iloc[0] - 8) < 1e-8
+    settings = pd.read_excel(io.BytesIO(contents), sheet_name="Settings").set_index("setting")["value"]
+    assert settings["organ"] == "Kidney"
+    if key == "ratio_excel":
+        assert float(settings["time_h"]) == 48
+    else:
+        assert float(settings["start_h"]) == 1 and float(settings["end_h"]) == 48
+        assert settings["auc_method"] == AUC_METHODS["observed"]
 '''.replace("APP_PATH", repr(app_path))
         app = AppTest.from_string(script, default_timeout=90).run()
         self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
@@ -51,9 +67,16 @@ assert abs(ranking.iloc[0].auc_ratio - 8) < 1e-8
         self.assertFalse(any("가중치" in w.label for w in app.slider))
         candidate = next(t for t in app.tabs if t.label == "Candidate Analysis")
         report = next(t for t in app.tabs if t.label == "BioD Report")
-        self.assertEqual(len(candidate.get("download_button")), 0)
+        self.assertEqual(len(candidate.get("download_button")), 2)
         self.assertEqual(len(report.get("download_button")), 1)
         ratio_tab = next(t for t in app.tabs if t.label == "장기 비율")
+        self.assertEqual(len(ratio_tab.get("download_button")), 2)
+        overview = next(t for t in app.tabs if t.label == "후보 비교")
+        import json
+        plot = json.loads(overview.get("plotly_chart")[0].proto.spec)
+        self.assertEqual([t["type"] for t in plot["data"]], ["bar", "bar"])
+        self.assertTrue(all("AC-SK-" in name for t in plot["data"] for name in t["y"]))
+        self.assertEqual(plot["layout"]["xaxis"]["range"], plot["layout"]["xaxis2"]["range"])
         headings = [m.value for m in ratio_tab.markdown]
         self.assertIn("#### Tumor-Organ ratio", headings)
         self.assertIn("#### Tumor-Organ ratio (AUC)", headings)
@@ -69,9 +92,9 @@ assert abs(ranking.iloc[0].auc_ratio - 8) < 1e-8
         self.assertEqual(len(retention_tab.get("plotly_chart")), 1)
         reference_tab = next(t for t in app.tabs if t.label == "Reference 비교")
         comparison = reference_tab.dataframe[0].value
-        self.assertEqual(list(comparison), ["물질", "후보 Mean", "Reference Mean", "증감률 (%)", "p값 (Welch)", "보정 p값 (BH q)", "검정 결과"])
-        self.assertTrue(comparison["p값 (Welch)"].eq("—").all())
-        self.assertTrue(any("양측 Welch" in c.value and "Benjamini" in c.value for c in reference_tab.caption))
+        self.assertEqual(list(comparison), ["물질", "후보 Mean", "Reference Mean", "증감률 (%)", "p값 (Student t-test)", "보정 p값 (BH q)", "검정 결과"])
+        self.assertTrue(comparison["p값 (Student t-test)"].eq("—").all())
+        self.assertTrue(any("양측 Student" in c.value and "Benjamini" in c.value for c in reference_tab.caption))
 
     def test_excel_upload_and_analysis_controls(self):
         app_path = str(Path(__file__).with_name("app.py"))
@@ -102,7 +125,7 @@ with patch("streamlit.file_uploader", return_value=[upload]):
         self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
         self.assertEqual(app.select_slider(key="analysis_auc_window_hold").value, (0.0, 24.0))
         reference_tab = next(t for t in app.tabs if t.label == "Reference 비교")
-        self.assertTrue(reference_tab.dataframe[0].value["p값 (Welch)"].ne("—").all())
+        self.assertTrue(reference_tab.dataframe[0].value["p값 (Student t-test)"].ne("—").all())
         app.selectbox(key="reference_time_filter").set_value(1.0).run()
         self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
         next(w for w in app.selectbox if w.label == "AUC 계산 방식").set_value("observed").run()
