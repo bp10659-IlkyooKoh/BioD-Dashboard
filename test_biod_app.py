@@ -53,6 +53,25 @@ assert abs(ranking.iloc[0].auc_ratio - 8) < 1e-8
         report = next(t for t in app.tabs if t.label == "BioD Report")
         self.assertEqual(len(candidate.get("download_button")), 0)
         self.assertEqual(len(report.get("download_button")), 1)
+        ratio_tab = next(t for t in app.tabs if t.label == "장기 비율")
+        headings = [m.value for m in ratio_tab.markdown]
+        self.assertIn("#### Tumor-Organ ratio", headings)
+        self.assertIn("#### Tumor-Organ ratio (AUC)", headings)
+        ratios, auc_ratios = [d.value for d in ratio_tab.dataframe]
+        self.assertEqual(list(ratios), ["물질", "Kidney Mean", "Tumor Mean", "Tumor/Organ ratio"])
+        self.assertEqual(list(auc_ratios), ["물질", "Kidney AUC", "Tumor AUC", "Tumor/Organ AUC ratio"])
+        row = ratios[ratios["물질"].str.endswith("AC-SK-048")].iloc[0]
+        self.assertAlmostEqual(row["Tumor/Organ ratio"], 8)
+        retention_tab = next(t for t in app.tabs if t.label == "유지율·감소율")
+        retention = retention_tab.dataframe[0].value
+        self.assertEqual(list(retention), ["물질", "유지율 (%)", "감소율 (%)"])
+        self.assertTrue(retention["유지율 (%)"].eq(25).all())
+        self.assertEqual(len(retention_tab.get("plotly_chart")), 1)
+        reference_tab = next(t for t in app.tabs if t.label == "Reference 비교")
+        comparison = reference_tab.dataframe[0].value
+        self.assertEqual(list(comparison), ["물질", "후보 Mean", "Reference Mean", "증감률 (%)", "p값 (Welch)", "보정 p값 (BH q)", "검정 결과"])
+        self.assertTrue(comparison["p값 (Welch)"].eq("—").all())
+        self.assertTrue(any("양측 Welch" in c.value and "Benjamini" in c.value for c in reference_tab.caption))
 
     def test_excel_upload_and_analysis_controls(self):
         app_path = str(Path(__file__).with_name("app.py"))
@@ -82,9 +101,16 @@ with patch("streamlit.file_uploader", return_value=[upload]):
         app.run()
         self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
         self.assertEqual(app.select_slider(key="analysis_auc_window_hold").value, (0.0, 24.0))
+        reference_tab = next(t for t in app.tabs if t.label == "Reference 비교")
+        self.assertTrue(reference_tab.dataframe[0].value["p값 (Welch)"].ne("—").all())
+        app.selectbox(key="reference_time_filter").set_value(1.0).run()
+        self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
         next(w for w in app.selectbox if w.label == "AUC 계산 방식").set_value("observed").run()
         self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
         self.assertEqual(app.select_slider(key="analysis_auc_window_observed").value, (1.0, 24.0))
+        selected = app.multiselect(key="analysis_profiles").value
+        app.multiselect(key="analysis_profiles").set_value(selected[:1]).run()
+        self.assertEqual(len(app.exception), 0, [e.message for e in app.exception])
         app.multiselect(key="analysis_profiles").set_value([]).run()
         self.assertEqual(len(app.exception), 0)
         self.assertTrue(any("분석 대상을 선택" in w.value for w in app.info))
