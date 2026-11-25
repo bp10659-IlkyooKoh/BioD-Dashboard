@@ -1,8 +1,6 @@
 """Candidate analysis and a separate portable report view."""
 import hashlib
 import json
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -12,13 +10,12 @@ import streamlit as st
 
 from biod_analysis import (AUC_METHODS, prepare, summarize, auc_table, ratio_tables,
                            retention_table, reference_comparison, rank_candidates,
-                           build_report, excel_bytes, ttest_ind)
+                           excel_bytes, ttest_ind)
+from biod_reporting import summarize_results, report_pdf
 
 
-@st.cache_data(show_spinner="보고서 준비 중...", max_entries=3)
-def _report_download(tables, settings, figure_jsons):
-    settings = dict(settings, generated_at=datetime.now(ZoneInfo("Asia/Seoul")).isoformat())
-    return build_report(tables, settings, [go.Figure(json.loads(s)) for s in figure_jsons])
+def _pdf_download(sections, result_tables, reviewer_note):
+    return report_pdf(sections, result_tables, reviewer_note)
 
 
 def _unavailable(report_tab, message):
@@ -92,7 +89,6 @@ def render_analysis(master, report_tab):
     weight = 0.5
     ranking = rank_candidates(aucs, tumor, normal, weight)
     tabs = st.tabs(["후보 비교", "장기 비율", "유지율·감소율", "Reference 비교"])
-    figures = []
     with tabs[0]:
         st.caption("표적 장기 AUC는 높고, 비교 장기 AUC는 낮은 정도를 동일하게 반영한 참고 순위입니다.")
         st.write(f"비교 가능 {len(ranking)} / {len(chosen)}개 물질")
@@ -116,7 +112,6 @@ def render_analysis(master, report_tab):
             fig.update_layout(showlegend=False, height=max(340, 65 * len(ranking) + 100), margin=dict(l=20, r=60, t=65, b=55))
             st.plotly_chart(fig, use_container_width=True)
             st.caption(f"같은 행은 같은 물질입니다. 왼쪽은 {tumor} 분포, 오른쪽은 {normal} 분포이며 두 그래프의 AUC 축 범위는 같습니다. 주황색은 Reference입니다.")
-            figures.append(fig)
         else:
             st.info("표적·비교 장기의 선택 구간 AUC가 모두 있는 물질이 없습니다.")
         with st.expander("계산 방법 및 AUC 상세"):
@@ -130,13 +125,17 @@ def render_analysis(master, report_tab):
         st.markdown(f"#### {tumor}-Organ ratio")
         st.caption(f"{tumor}/{ratio_organ} · {ratio_time:g}h · Mean 단위: %ID/g")
         selected_ratios = ratios[(ratios.organ == ratio_organ) & (ratios.timepoint_hour == ratio_time)]
-        ratio_view = _compact(selected_ratios, ["label", "mean", "tumor_mean", "tumor_to_organ"],
+        _compact(selected_ratios, ["label", "mean", "tumor_mean", "tumor_to_organ"],
                  {"label": "물질", "mean": f"{ratio_organ} Mean", "tumor_mean": f"{tumor} Mean", "tumor_to_organ": f"{tumor}/Organ ratio"}, short_labels)
+        ratio_view = ratios[ratios.organ == ratio_organ].sort_values(["timepoint_hour", "label"])[["profile", "label", "timepoint_hour", "mean", "tumor_mean", "tumor_to_organ"]].copy()
+        ratio_view["label"] = ratio_view.profile.map(short_labels)
+        ratio_view = ratio_view.drop(columns="profile").rename(columns={"label": "물질", "timepoint_hour": "시간 (h)", "mean": f"{ratio_organ} Mean", "tumor_mean": f"{tumor} Mean", "tumor_to_organ": f"{tumor}/Organ ratio"})
         export_context = dict(target=tumor, organ=ratio_organ, selected_profiles=[labels[p] for p in chosen],
                               missing_values="Blank = unavailable (missing measurements or non-positive denominator)")
         st.download_button(f"{tumor}-Organ ratio Excel 다운로드",
-                           data=excel_bytes({"Organ_Ratio": ratio_view}, dict(export_context, time_h=ratio_time, mean_unit="%ID/g", calculation="Ratio of means")),
-                           file_name=f"BioD_Organ_Ratio_{ratio_time:g}h.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ratio_excel")
+                           data=excel_bytes({"Organ_Ratio": ratio_view}, dict(export_context, time_scope="All observed timepoints", timepoints_h=sorted(ratios.timepoint_hour.unique().tolist()), mean_unit="%ID/g", calculation="Ratio of means")),
+                           file_name="BioD_Organ_Ratio_All_Times.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ratio_excel")
+        st.caption("Excel에는 선택한 장기의 전체 측정 시간이 포함됩니다. 화면의 시점 선택은 다운로드 범위를 제한하지 않습니다.")
         st.markdown(f"#### {tumor}-Organ ratio (AUC)")
         st.caption(f"{start:g}–{end:g}h · AUC 단위: %ID/g·h")
         auc_ratio_view = _compact(auc_ratios[auc_ratios.organ == ratio_organ], ["label", "auc", "tumor_auc", "auc_ratio"],
@@ -151,7 +150,6 @@ def render_analysis(master, report_tab):
             fig = px.line(valid_ratios.sort_values("timepoint_hour"), x="timepoint_hour", y="tumor_to_organ", color="label", markers=True,
                           title=f"{tumor}/{ratio_organ}", labels={"timepoint_hour": "Time (h)", "tumor_to_organ": "Ratio"})
             st.plotly_chart(fig, use_container_width=True)
-            figures.append(fig)
     with tabs[2]:
         c0, c1, c2 = st.columns(3)
         retention_organ = c0.selectbox("유지율을 볼 장기", organs, index=organs.index(tumor), key="retention_organ_filter")
@@ -170,7 +168,6 @@ def render_analysis(master, report_tab):
             fig.add_vline(x=100, line_dash="dot", line_color="gray")
             fig.update_layout(height=max(320, 90 * len(selected_retention)), yaxis=dict(autorange="reversed"), margin=dict(r=80))
             st.plotly_chart(fig, use_container_width=True)
-            figures.append(fig)
         else:
             st.info("두 시점의 측정값과 초기 양수 값이 있어야 유지율을 계산할 수 있습니다.")
         _compact(selected_retention, ["label", "retention_pct", "decrease_pct"],
@@ -204,18 +201,10 @@ def render_analysis(master, report_tab):
 
     with report_tab:
         st.subheader("BioD Report")
-        st.write("Candidate Analysis에서 선택한 물질과 조건을 보고서로 저장합니다.")
+        st.write("핵심 결과와 계산 기반 요약을 PDF 또는 Excel로 저장합니다. AI 해석은 아직 연결하지 않았습니다.")
         st.caption(f"{len(chosen)}개 물질 · {tumor}/{normal} · {start:g}–{end:g}h · Reference: {labels[reference]}")
-        st.caption("ZIP 구성: 오프라인 HTML 보고서, Excel 결과표·표준화 원자료, 분석 설정 JSON")
-        target_curve = summary[summary.organ == tumor].sort_values("timepoint_hour")
-        if not target_curve.empty:
-            figures.append(px.line(target_curve, x="timepoint_hour", y="mean", color="label", markers=True,
-                                   title=f"{tumor} Time–Activity Curve", labels={"timepoint_hour": "Time (h)", "mean": "%ID/g"}))
-        last_biod = summary[summary.timepoint_hour == late]
-        if not last_biod.empty:
-            figures.append(px.bar(last_biod, x="organ", y="mean", color="label", barmode="group",
-                                  title=f"Whole BioD · {late:g} h", labels={"mean": "%ID/g"}))
         settings = dict(reference=labels[reference], target=tumor, comparator=normal,
+                        reference_name=short_labels[reference],
                         auc_method=AUC_METHODS[method], start_h=start, end_h=end,
                         early_h=early, late_h=late, tumor_weight=weight,
                         ratio_organ=ratio_organ, ratio_time_h=ratio_time, retention_organ=retention_organ,
@@ -227,11 +216,27 @@ def render_analysis(master, report_tab):
                         summary_input="rows counts input records, not necessarily animals; SD omitted for summary inputs",
                         candidate_chart="Paired horizontal AUC bars; shared scale; Reference highlighted",
                         interpretation="Exploratory cohort-relative ranking; equal weight for target and comparator")
-        tables = dict(Summary=summary, AUC=aucs, Ratios=ratios, AUC_Ratios=auc_ratios,
-                      Retention=retention, Reference=comparisons, Ranking=ranking, Quality=issues, Raw_Data=raw)
         digest = hashlib.sha256(pd.util.hash_pandas_object(raw, index=True).values.tobytes() + json.dumps(settings, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
-        report = _report_download(tables, settings, tuple(fig.to_json() for fig in figures))
-        st.download_button("One-click BioD Report 다운로드", data=report, file_name=f"BioD_Report_{digest}.zip", mime="application/zip", key=f"report_{digest}", type="primary")
-        with st.expander("보고서 포함 항목 및 데이터 확인"):
-            st.write("평균·AUC, 후보 순위·물질별 AUC 비교 그래프, 장기 비율, 유지율·감소율, Reference 비교, 분석에 사용한 표준화 원자료")
+        sections = summarize_results(ranking, selected_retention, selected_comparison, settings, short_labels)
+        for title, content in sections:
+            st.markdown(f"**{title}**")
+            st.write(content)
+        note = st.text_area("검토 의견 (선택)", key=f"report_note_{digest}", placeholder="결과에 대한 검토 의견을 입력하면 보고서에 포함됩니다.")
+        retention_view = selected_retention[["label", "retention_pct", "decrease_pct"]].rename(columns={"label": "물질", "retention_pct": "유지율 (%)", "decrease_pct": "감소율 (%)"})
+        reference_view = selected_comparison[["profile", "mean", "reference_mean", "change_pct", "p_value", "q_bh", "n_candidate", "n_reference", "result"]].copy()
+        reference_view.insert(0, "물질", reference_view.profile.map(short_labels))
+        reference_view = reference_view.drop(columns="profile").rename(columns={"mean": "후보 Mean", "reference_mean": "Reference Mean", "change_pct": "증감률 (%)", "p_value": "p값 (Student t-test)", "q_bh": "보정 p값 (BH q)", "n_candidate": "후보 n", "n_reference": "Reference n", "result": "검정 결과"})
+        core_tables = {"후보 비교": display, "유지율·감소율": retention_view, "Reference 비교": reference_view.drop(columns=["후보 n", "Reference n"])}
+        summary_rows = sections + ([("검토 의견", note)] if note.strip() else [])
+        workbook_tables = {"결과 요약": pd.DataFrame(summary_rows, columns=["항목", "내용"]),
+                           "후보 비교": display, "시간별 장기 비율": ratio_view, "AUC 장기 비율": auc_ratio_view,
+                           "유지율·감소율": retention_view, "Reference 비교": reference_view,
+                           "유지율 상세": retention.drop(columns="profile"), "표준화 원자료": raw.drop(columns="profile")}
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("📄 결과 보고서 PDF 다운로드", data=_pdf_download(sections, core_tables, note), file_name=f"BioD_Report_{digest}.pdf", mime="application/pdf", key="report_pdf", type="primary")
+        with c2:
+            st.download_button("📊 결과 보고서 Excel 다운로드", data=excel_bytes(workbook_tables, settings), file_name=f"BioD_Report_{digest}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="report_excel")
+        with st.expander("보고서 구성 및 데이터 확인"):
+            st.write("PDF: 분석 범위·주요 관찰·통계 방법·핵심 표. Excel: 요약·시간별 비율·상세 결과·원자료. 검토 의견을 입력하면 두 형식에 함께 포함됩니다.")
             st.dataframe(issues, hide_index=True)

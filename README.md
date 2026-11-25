@@ -13,7 +13,7 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-`app.py`, `biod_analysis.py`, `biod_ui.py`, `biod_mollim.py`, `biod_labels.py`는 같은 폴더에 있어야 합니다.
+`app.py`, `biod_analysis.py`, `biod_ui.py`, `biod_mollim.py`, `biod_labels.py`, `biod_reporting.py`는 같은 폴더에 있어야 합니다.
 
 ## 사용
 
@@ -34,7 +34,8 @@ python -m streamlit run app.py
    각 막대에 실제 수치를 표시하고 Reference는 주황색과 이름으로 구분합니다.
    **장기 비율**은 장기·시점을 선택하면 `Tumor-Organ ratio`와 `Tumor-Organ ratio (AUC)`를
    각각 물질·장기 Mean/AUC·표적 Mean/AUC·비율의 4열로 표시합니다.
-   각 표 아래의 **Excel 다운로드** 버튼은 현재 선택한 장기·시점/적분 구간에 해당하는 표를 별도 XLSX로 저장합니다.
+   일반 비율 **Excel 다운로드**는 선택한 장기의 전체 측정 시간을 포함합니다. 화면의 시점 필터는 다운로드 범위를 제한하지 않습니다.
+   AUC 비율 Excel은 선택한 적분 구간의 표를 별도로 저장합니다.
    수치는 반올림 전 숫자로 저장하며 Settings 시트에 장기·시간·계산 방식과 출처를 포함합니다.
    **유지율·감소율**은 장기와 두 시점을 선택해 물질별 막대그래프와 유지율·감소율 3열 표로 확인합니다.
 5. **Reference 비교**는 선택한 장기·시점의 후보 Mean·Reference Mean·증감률·p값·보정 p값·검정 결과를 표시합니다.
@@ -42,8 +43,12 @@ python -m streamlit run app.py
    **통계 검정 설정**에서 독립군·시험 조건을 확인하면 검정이 활성화됩니다.
    화면 필터는 표시만 바꾸며, BH 보정은 선택한 전체 물질·장기·시간의 유효 검정을 대상으로 유지합니다.
    원자료·표본 수·겉보기 반감기 등 상세 항목은 보고서에 보존합니다.
-6. 그 다음 **BioD Report** 탭에서 현재 분석 조건을 확인하고 ZIP을 다운로드합니다. 오프라인 HTML 보고서,
-   Excel 결과표·원자료, 분석 설정 JSON이 함께 포함됩니다. HTML은 브라우저에서 인쇄할 수 있습니다.
+6. **📄 BioD Report** 탭은 분석 범위·주요 관찰·유지율·Reference 통계의 계산 기반 요약을 보여줍니다.
+   선택적으로 검토 의견을 입력하고 **PDF** 또는 **Excel**을 직접 다운로드합니다.
+   PDF는 요약과 핵심 표를 읽기 쉽게 배치하고, Excel은 결과 요약을 첫 시트에 두고 전체 시간 비율·상세 결과·원자료를 별도 시트에 저장합니다.
+   PDF의 각 핵심 표는 최대 12행이며 전체 결과는 Excel에서 확인합니다. 한글 출력에는 맑은 고딕 또는 NanumGothic이 필요합니다.
+   현재 요약은 계산 결과를 정해진 문장으로 정리한 것이며 외부 AI 해석은 포함하지 않습니다.
+   AI 연동은 다음 단계로 미뤘으며 데이터 외부 전송은 없습니다.
 
 ## 분석 정의와 해석
 
@@ -72,7 +77,7 @@ python -m streamlit run app.py
 - **KIRAMS:** graph 시트의 평균값 입력으로 표시하며 SD·개체 검정은 계산하지 않습니다.
   다른 CRO도 개체 ID가 없거나 중복이면 검정을 제외하고 이유를 표시합니다.
   `rows`는 입력 행 수이며 동물 수를 뜻하지 않습니다.
-- **원자료:** 보고서 Raw_Data에는 분석에 사용한 유효한 표준화 원자료를 포함합니다.
+- **원자료:** Excel 보고서의 표준화 원자료 시트에는 분석에 사용한 유효한 데이터를 포함합니다.
   시간/값의 결측·비수치·음수는 새 분석에서 제외하고 Quality 표에 수를 기록합니다.
   업로드 원본 Excel 전체를 보고서에 복사하지는 않습니다.
 - **기존 3개 탭:** 기존 표시 그룹 기준 요약을 유지합니다. 서로 다른 파일의 같은 표시명이
@@ -81,7 +86,7 @@ python -m streamlit run app.py
 ## 검증
 
 ```powershell
-python -m unittest -v test_biod_analysis test_biod_app test_biod_mollim test_biod_labels
+python -m unittest -v test_biod_analysis test_biod_app test_biod_mollim test_biod_labels test_biod_reporting
 ```
 
 합성 데이터로 수치 계산·통계 제외 조건·보고서 구조 및 Excel 업로드→화면 설정 변경을 검증합니다.

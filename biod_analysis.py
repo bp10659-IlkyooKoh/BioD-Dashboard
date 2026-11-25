@@ -196,6 +196,9 @@ def rank_candidates(aucs, tumor, normal, weight=0.5):
 
 def excel_bytes(tables, settings):
     """Export numeric tables and their analysis context without converting labels to formulas."""
+    import math
+    import unicodedata
+    from openpyxl.styles import Alignment, Font, PatternFill
     excel = io.BytesIO()
     with pd.ExcelWriter(excel, engine="openpyxl") as writer:
         all_tables = {**tables, "Settings": pd.DataFrame({"setting": list(settings), "value": [str(v) for v in settings.values()]})}
@@ -211,6 +214,20 @@ def excel_bytes(tables, settings):
                         cell.data_type = "s"
             for col in ws.columns:
                 ws.column_dimensions[col[0].column_letter].width = min(55, max(14, len(str(col[0].value)) + 3))
+            if name in {"결과 요약", "Settings"}:
+                ws.column_dimensions["A"].width = 25
+                ws.column_dimensions["B"].width = 100
+                ws.row_dimensions[1].height = 25
+                for cell in ws[1]:
+                    cell.font = Font(name="Malgun Gothic", bold=True, color="FFFFFF")
+                    cell.fill = PatternFill("solid", fgColor="243B5A")
+                for row in ws.iter_rows(min_row=2):
+                    for cell in row:
+                        cell.font = Font(name="Malgun Gothic", size=10)
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    text = str(row[1].value or "")
+                    units = sum(2 if unicodedata.east_asian_width(c) in {"W", "F"} else 1 for c in text)
+                    ws.row_dimensions[row[0].row].height = min(409, max(32, (math.ceil(units / 94) + text.count("\n")) * 16 + 10))
     return excel.getvalue()
 
 

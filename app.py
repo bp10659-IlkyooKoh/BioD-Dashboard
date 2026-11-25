@@ -1309,8 +1309,8 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Mean Table",
     "📊 Whole BioD Bar Plot",
     "📈 PK Trend Line Plot & AUC",
-    "Candidate Analysis",
-    "BioD Report"
+    "🧪 Candidate Analysis",
+    "📄 BioD Report"
 ])
 
 
